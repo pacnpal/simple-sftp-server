@@ -20,21 +20,31 @@ ghcr.io/pacnpal/simple-sftp-server
 
 ## Quick Start
 
+Create host directories first (recommended):
+
+```bash
+mkdir -p /home/user/.ssh_keys/simple-sftp /home/user/.ssh_keys/simple-sftp-host /home/user/sftp_data
+chmod 700 /home/user/.ssh_keys /home/user/.ssh_keys/simple-sftp /home/user/.ssh_keys/simple-sftp-host
+```
+
 ```bash
 docker run -d --name sftp \
   -p 2222:22 \
-  -v /home/user/sftp:/home/sftpuser \
+  -e SSH_KEY_DIR=/keys \
+  -v /home/user/.ssh_keys/simple-sftp:/keys \
+  -v /home/user/.ssh_keys/simple-sftp-host:/home/sftpuser/.host_keys \
+  -v /home/user/sftp_data:/home/sftpuser/data \
   pacnpal/simple-sftp-server
 ```
 
-One mount. Everything — keys, host keys, and uploaded files — persists in `/home/user/sftp` across container restarts and rebuilds.
+This image intentionally stores generated client keys on the host for convenience. You are responsible for securing `/home/user/.ssh_keys/simple-sftp`.
 
 ### Get Your Login Key
 
-On first start, a keypair is generated. Since the volume is bind-mounted, the key is already on your host:
+On first start, a keypair is generated. The private key is already on your host:
 
 ```bash
-cp /home/user/sftp/.ssh/sftpuser_key ./sftp_key && chmod 600 ./sftp_key
+cp /home/user/.ssh_keys/simple-sftp/sftpuser_key ./sftp_key && chmod 600 ./sftp_key
 ```
 
 > **Windows users**: The `chmod` command doesn't exist on Windows. Instead, right-click the file > Properties > Security > make sure only your user has access.
@@ -67,11 +77,11 @@ docker start sftp
 docker rm -f sftp
 ```
 
-Your files, keys, and server config are stored on the host filesystem, so they persist across `stop`, `start`, and even `docker rm` + recreate. They only go away if you explicitly delete the directory:
+Your files and keys are stored on the host filesystem, so they persist across `stop`, `start`, and even `docker rm` + recreate. They only go away if you explicitly delete the directories:
 
 ```bash
-# WARNING: This deletes all your uploaded files, keys, and host keys
-rm -rf /home/user/sftp
+# WARNING: This deletes all generated keys, host keys, and uploaded files
+rm -rf /home/user/.ssh_keys/simple-sftp /home/user/.ssh_keys/simple-sftp-host /home/user/sftp_data
 ```
 
 ---
@@ -86,8 +96,12 @@ services:
     image: pacnpal/simple-sftp-server:latest
     ports:
       - "2222:22"
+    environment:
+      - SSH_KEY_DIR=/keys
     volumes:
-      - /home/user/sftp:/home/sftpuser
+      - /home/user/.ssh_keys/simple-sftp:/keys
+      - /home/user/.ssh_keys/simple-sftp-host:/home/sftpuser/.host_keys
+      - /home/user/sftp_data:/home/sftpuser/data
 ```
 
 Then run:
@@ -102,17 +116,28 @@ Everything else is the same — get the key and connect as described above.
 
 ## Bring Your Own Keys
 
-If you already have SSH keys and an `authorized_keys` file, you can skip the auto-generated key. Mount yours in:
+If you already have SSH keys and an `authorized_keys` file, you can skip the auto-generated key.
+Put `authorized_keys` inside a host directory, then mount that directory as `SSH_KEY_DIR`.
 
 ```bash
 docker run -d --name sftp \
   -p 2222:22 \
-  -v /home/user/sftp:/home/sftpuser \
-  -v /path/to/your/authorized_keys:/home/sftpuser/.ssh/authorized_keys:ro \
+  -e SSH_KEY_DIR=/keys \
+  -v /path/to/your/keydir:/keys \
+  -v /home/user/.ssh_keys/simple-sftp-host:/home/sftpuser/.host_keys \
+  -v /home/user/sftp_data:/home/sftpuser/data \
   pacnpal/simple-sftp-server
 ```
 
-Replace `/path/to/your/authorized_keys` with the actual path to your file. Then connect using whatever private key matches.
+Replace `/path/to/your/keydir` with the directory containing `authorized_keys`.
+
+---
+
+## Key Handling (No Silent Rotation)
+
+- `authorized_keys` is copied at startup to `/etc/ssh/sftpuser_keys/authorized_keys` with strict container-side permissions.
+- New keys are generated only on true first run (no existing key files).
+- If persisted key state is unreadable, empty, or inconsistent, startup fails with a clear error instead of rotating keys.
 
 ---
 
@@ -131,8 +156,13 @@ Example — serve multiple directories:
 ```bash
 docker run -d --name sftp \
   -p 2222:22 \
+  -e SSH_KEY_DIR=/keys \
   -e SFTP_PATHS=/data,/uploads,/backups \
-  -v /home/user/sftp:/home/sftpuser \
+  -v /home/user/.ssh_keys/simple-sftp:/keys \
+  -v /home/user/.ssh_keys/simple-sftp-host:/home/sftpuser/.host_keys \
+  -v /home/user/sftp_data:/home/sftpuser/data \
+  -v /home/user/sftp_uploads:/home/sftpuser/uploads \
+  -v /home/user/sftp_backups:/home/sftpuser/backups \
   pacnpal/simple-sftp-server
 ```
 
@@ -158,7 +188,9 @@ Then use `simple-sftp-server` instead of `pacnpal/simple-sftp-server` in the com
 - **Key auth only** — password authentication is disabled
 - **Chrooted** — user is locked to their home directory, can't see anything else
 - All forwarding disabled (TCP, agent, X11, tunneling)
-- Host keys are generated at first start, not baked into the image (each container gets unique keys). They are automatically persisted inside the mounted volume
+- Generated client keys are host-persisted by design for convenience. Secure your host client-key directory.
+- Host keys are generated at first start, not baked into the image (each container gets unique keys)
+- Invalid/unreadable persisted key state causes startup to fail instead of silently rotating keys
 
 ---
 

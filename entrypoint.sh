@@ -33,11 +33,34 @@ grep -q "^AuthorizedKeysFile" /etc/ssh/sshd_config || \
 
 # Setup persistent .ssh on the mounted volume
 mkdir -p "$PERSIST_SSH"
+AUTH_KEYS="$PERSIST_SSH/authorized_keys"
+KEY_FILE="$PERSIST_SSH/sftpuser_key"
+PUB_KEY_FILE="${KEY_FILE}.pub"
 
-# Check if we have real (non-comment, non-empty) keys
+# Validate persisted key state to avoid silent key rotation.
+# - Use existing authorized_keys when present and readable.
+# - Generate keys only on true first run (no key files present).
+# - Fail on partial or unreadable key state.
 has_keys=false
-if [ -f "$PERSIST_SSH/authorized_keys" ] && grep -qv '^#\|^[[:space:]]*$' "$PERSIST_SSH/authorized_keys" 2>/dev/null; then
+if [ -e "$AUTH_KEYS" ]; then
+  if [ ! -r "$AUTH_KEYS" ]; then
+    echo "ERROR: Found ${AUTH_KEYS} but it is not readable."
+    echo "Fix host permissions and restart. Refusing to rotate keys."
+    exit 1
+  fi
+  if ! grep -qv '^#\|^[[:space:]]*$' "$AUTH_KEYS"; then
+    echo "ERROR: ${AUTH_KEYS} contains no valid SSH public keys."
+    echo "Add at least one key and restart."
+    exit 1
+  fi
   has_keys=true
+else
+  if [ -e "$KEY_FILE" ] || [ -e "$PUB_KEY_FILE" ]; then
+    echo "ERROR: Incomplete key state in ${PERSIST_SSH}."
+    echo "Found key material without ${AUTH_KEYS}. Refusing to generate new keys."
+    echo "Restore ${AUTH_KEYS} or remove partial key files and restart."
+    exit 1
+  fi
 fi
 
 if [ "$has_keys" = false ]; then
@@ -46,11 +69,13 @@ if [ "$has_keys" = false ]; then
   echo "=============================================="
   echo ""
 
-  KEY_FILE="$PERSIST_SSH/sftpuser_key"
   ssh-keygen -t ed25519 -f "$KEY_FILE" -N "" -C "sftpuser@sftp-server" > /dev/null 2>&1
-  cp "${KEY_FILE}.pub" "$PERSIST_SSH/authorized_keys"
+  cp "$PUB_KEY_FILE" "$AUTH_KEYS"
 
   echo "A new SSH keypair has been generated."
+  echo ""
+  echo "WARNING: Store this private key securely on the host."
+  echo "Anyone with this file can access your SFTP server."
   echo ""
   echo "Your private key is in the mounted volume at:"
   echo "  ${PERSIST_SSH}/sftpuser_key"
@@ -60,7 +85,7 @@ if [ "$has_keys" = false ]; then
   echo ""
   echo "=============================================="
 else
-  key_count=$(grep -cv '^#\|^[[:space:]]*$' "$PERSIST_SSH/authorized_keys" 2>/dev/null || echo 0)
+  key_count=$(grep -cv '^#\|^[[:space:]]*$' "$AUTH_KEYS" 2>/dev/null || echo 0)
   echo "=============================================="
   echo "  SFTP SERVER - USING EXISTING KEYS"
   echo "=============================================="
@@ -68,11 +93,24 @@ else
   echo "=============================================="
 fi
 
+# Normalize ownership/permissions on persisted key material.
+# This keeps first-run generated keys manageable from the host bind mount.
+# Ignore failures so read-only mounted authorized_keys does not break startup.
+chown sftpuser:sftpuser "$PERSIST_SSH" 2>/dev/null || true
+chmod 700 "$PERSIST_SSH" 2>/dev/null || true
+chown sftpuser:sftpuser \
+  "$AUTH_KEYS" \
+  "$KEY_FILE" \
+  "$PUB_KEY_FILE" 2>/dev/null || true
+chmod 600 "$AUTH_KEYS" 2>/dev/null || true
+chmod 600 "$KEY_FILE" 2>/dev/null || true
+chmod 644 "$PUB_KEY_FILE" 2>/dev/null || true
+
 # Copy keys to a container-only directory with correct permissions.
 # This avoids SSH refusing keys due to bind-mount permission issues.
 rm -rf "$RUNTIME_SSH"
 mkdir -p "$RUNTIME_SSH"
-cp "$PERSIST_SSH/authorized_keys" "$RUNTIME_SSH/authorized_keys"
+cp "$AUTH_KEYS" "$RUNTIME_SSH/authorized_keys"
 chown -R sftpuser:sftpuser "$RUNTIME_SSH"
 chmod 700 "$RUNTIME_SSH"
 chmod 600 "$RUNTIME_SSH/authorized_keys"
