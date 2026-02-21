@@ -206,8 +206,8 @@ prepare_auth_keys() {
   # This avoids SSH refusing keys due to host bind-mount permission issues.
   mkdir -p "$RUNTIME_SSH"
   cp "$AUTH_KEYS" "$RUNTIME_SSH/authorized_keys"
-  chown root:root "$RUNTIME_SSH" "$RUNTIME_SSH/authorized_keys"
-  chmod 755 "$RUNTIME_SSH"
+  chown "$SFTP_USER":"$SFTP_USER" "$RUNTIME_SSH" "$RUNTIME_SSH/authorized_keys"
+  chmod 700 "$RUNTIME_SSH"
   chmod 600 "$RUNTIME_SSH/authorized_keys"
 }
 
