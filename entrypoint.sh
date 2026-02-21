@@ -34,9 +34,13 @@ fi
 sed -i "s/^#\?Port .*/Port ${SSH_PORT}/" /etc/ssh/sshd_config
 grep -q "^Port" /etc/ssh/sshd_config || sed -i "/^Match/i Port ${SSH_PORT}" /etc/ssh/sshd_config
 
-# Point sshd at the container-only copy of authorized_keys (before Match block)
-grep -q "^AuthorizedKeysFile" /etc/ssh/sshd_config || \
+# Point sshd at the container-only copy of authorized_keys (before Match block).
+# Alpine's default config already defines AuthorizedKeysFile, so we must override it.
+if grep -q '^#\?AuthorizedKeysFile' /etc/ssh/sshd_config; then
+  sed -i "s|^#\?AuthorizedKeysFile .*|AuthorizedKeysFile ${RUNTIME_SSH}/authorized_keys|" /etc/ssh/sshd_config
+else
   sed -i "/^Match/i AuthorizedKeysFile ${RUNTIME_SSH}/authorized_keys" /etc/ssh/sshd_config
+fi
 
 # Setup persistent .ssh on the mounted volume
 mkdir -p "$PERSIST_SSH"
