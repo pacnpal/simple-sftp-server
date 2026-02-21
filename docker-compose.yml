@@ -1,0 +1,17 @@
+services:
+  sftp:
+    build: .
+    image: pacnpal/simple-sftp-server:latest
+    ports:
+      - "${SFTP_HOST_PORT:-2222}:${SFTP_PORT:-22}"
+    environment:
+      - SSH_KEY_DIR=/home/sftpuser/.ssh
+      - SFTP_PATHS=/data,/uploads,/backups
+      - SFTP_PORT=${SFTP_PORT:-22}
+    volumes:
+      - sftp_ssh:/home/sftpuser/.ssh
+      - sftp_data:/home/sftpuser/data
+
+volumes:
+  sftp_ssh:
+  sftp_data:
