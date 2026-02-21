@@ -164,4 +164,4 @@ Then use `simple-sftp-server` instead of `pacnpal/simple-sftp-server` in the com
 
 ## License
 
-MIT — see [LICENSE](LICENSE).
+MIT — see [LICENSE](https://github.com/pacnpal/simple-sftp-server/blob/main/LICENSE).
