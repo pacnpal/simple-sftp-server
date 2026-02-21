@@ -1,0 +1,39 @@
+# Managed by simple-sftp-server image. Runtime should start sshd with:
+#   /usr/sbin/sshd -D -e -f /etc/ssh/sshd_config -p <port>
+#
+# Port is overridden at runtime via the entrypoint's validated SFTP_PORT.
+
+Port 22
+AddressFamily any
+ListenAddress 0.0.0.0
+ListenAddress ::
+
+HostKey /etc/ssh/ssh_host_rsa_key
+HostKey /etc/ssh/ssh_host_ecdsa_key
+HostKey /etc/ssh/ssh_host_ed25519_key
+
+PermitRootLogin no
+PubkeyAuthentication yes
+AuthenticationMethods publickey
+PasswordAuthentication no
+KbdInteractiveAuthentication no
+PermitEmptyPasswords no
+UseDNS no
+StrictModes yes
+
+AllowUsers sftpuser
+AuthorizedKeysFile /etc/ssh/sftpuser_keys/authorized_keys
+
+X11Forwarding no
+AllowTcpForwarding no
+AllowAgentForwarding no
+AllowStreamLocalForwarding no
+PermitTunnel no
+GatewayPorts no
+PermitUserEnvironment no
+
+Subsystem sftp internal-sftp
+
+Match User sftpuser
+  ChrootDirectory %h
+  ForceCommand internal-sftp

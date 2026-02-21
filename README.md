@@ -42,6 +42,7 @@ docker run -d --name simple-sftp-server \
 ```
 
 This image intentionally stores generated client keys on the host for convenience. You are responsible for securing `/home/user/.ssh_keys/simple-sftp`.
+Use non-overlapping host directories for `/keys`, `/home/sftpuser/.host_keys`, and `/home/sftpuser/data`.
 
 ### Get Your Login Key
 
@@ -142,6 +143,50 @@ Replace `/path/to/your/keydir` with the directory containing `authorized_keys`.
 - `authorized_keys` is copied at startup to `/etc/ssh/sftpuser_keys/authorized_keys` with strict container-side permissions.
 - New keys are generated only on true first run (no existing key files).
 - If persisted key state is unreadable, empty, or inconsistent, startup fails with a clear error instead of rotating keys.
+- Host keys are persisted in `HOST_KEY_DIR` (`/home/sftpuser/.host_keys` by default). Missing host key types are auto-generated on startup and synced back.
+
+---
+
+## SSHD Configuration
+
+- The image ships a managed `sshd_config` at build time (see `sshd_config` in this repo).
+- Startup does not patch `sshd_config` with `sed`; it starts sshd with:
+  `sshd -D -e -f /etc/ssh/sshd_config -p "$SFTP_PORT"`
+- `AuthorizedKeysFile` is pinned to `/etc/ssh/sftpuser_keys/authorized_keys` to avoid host mount permission edge cases.
+- Runtime port changes are handled with the `-p` process argument, not by mutating config files.
+
+---
+
+## Troubleshooting
+
+### Permission denied with matching key fingerprint
+
+If this fails even with the right private key:
+
+```bash
+sftp -o IdentitiesOnly=yes -o IdentityAgent=none -i sftp_key -P 2222 sftpuser@localhost
+```
+
+Verify the runtime sshd view:
+
+```bash
+docker exec <container_name> sh -lc 'sshd -T -C user=sftpuser,host=localhost,addr=127.0.0.1 | grep authorizedkeysfile'
+docker exec <container_name> sh -lc 'ssh-keygen -lf /etc/ssh/sftpuser_keys/authorized_keys'
+ssh-keygen -y -f sftp_key | ssh-keygen -lf -
+```
+
+The `authorizedkeysfile` path should be `/etc/ssh/sftpuser_keys/authorized_keys`, and the two fingerprints should match.
+
+### Host key keeps changing
+
+If clients warn about host key changes, your host-key mount is not persisting stable key files.
+
+```bash
+docker inspect <container_name> --format '{{range .Mounts}}{{.Destination}} <- {{.Source}}{{println}}{{end}}'
+ls -l /home/user/.ssh_keys/simple-sftp-host/ssh_host_*
+```
+
+Keep `/home/sftpuser/.host_keys` mounted to a stable host directory and avoid overlapping it under an SFTP-exposed parent mount.
 
 ---
 
@@ -154,6 +199,7 @@ You can customize behavior with these:
 | `SFTP_PORT` | `22` | Port the SFTP server listens on inside the container |
 | `SFTP_PATHS` | `/data` | Comma-separated directories to create (accessible over SFTP) |
 | `SSH_KEY_DIR` | `/home/sftpuser/.ssh` | Where keys are stored inside the container |
+| `HOST_KEY_DIR` | `/home/sftpuser/.host_keys` | Where SSH host keys are persisted inside the container |
 
 Example — serve multiple directories:
 
