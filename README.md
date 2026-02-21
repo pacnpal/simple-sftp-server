@@ -33,16 +33,18 @@ chmod 700 /home/user/.ssh_keys /home/user/.ssh_keys/simple-sftp /home/user/.ssh_
 
 ```bash
 docker run -d --name simple-sftp-server \
-  -p 2222:22 \
+  -p 2222:2022 \
+  -e PUID="$(id -u)" \
+  -e PGID="$(id -g)" \
   -e SSH_KEY_DIR=/keys \
   -v /home/user/.ssh_keys/simple-sftp:/keys \
-  -v /home/user/.ssh_keys/simple-sftp-host:/home/sftpuser/.host_keys \
+  -v /home/user/.ssh_keys/simple-sftp-host:/etc/ssh/host_keys \
   -v /home/user/sftp_data:/home/sftpuser/data \
   pacnpal/simple-sftp-server
 ```
 
 This image intentionally stores generated client keys on the host for convenience. You are responsible for securing `/home/user/.ssh_keys/simple-sftp`.
-Use non-overlapping host directories for `/keys`, `/home/sftpuser/.host_keys`, and `/home/sftpuser/data`.
+Use non-overlapping host directories for `/keys`, `/etc/ssh/host_keys`, and `/home/sftpuser/data`.
 
 ### Get Your Login Key
 
@@ -100,12 +102,14 @@ services:
   sftp:
     image: pacnpal/simple-sftp-server:latest
     ports:
-      - "2222:22"
+      - "${SFTP_HOST_PORT:-2222}:2022"
     environment:
+      - PUID=1000
+      - PGID=1000
       - SSH_KEY_DIR=/keys
     volumes:
       - /home/user/.ssh_keys/simple-sftp:/keys
-      - /home/user/.ssh_keys/simple-sftp-host:/home/sftpuser/.host_keys
+      - /home/user/.ssh_keys/simple-sftp-host:/etc/ssh/host_keys
       - /home/user/sftp_data:/home/sftpuser/data
 ```
 
@@ -126,10 +130,12 @@ Put `authorized_keys` inside a host directory, then mount that directory as `SSH
 
 ```bash
 docker run -d --name simple-sftp-server \
-  -p 2222:22 \
+  -p 2222:2022 \
+  -e PUID="$(id -u)" \
+  -e PGID="$(id -g)" \
   -e SSH_KEY_DIR=/keys \
   -v /path/to/your/keydir:/keys \
-  -v /home/user/.ssh_keys/simple-sftp-host:/home/sftpuser/.host_keys \
+  -v /home/user/.ssh_keys/simple-sftp-host:/etc/ssh/host_keys \
   -v /home/user/sftp_data:/home/sftpuser/data \
   pacnpal/simple-sftp-server
 ```
@@ -143,17 +149,18 @@ Replace `/path/to/your/keydir` with the directory containing `authorized_keys`.
 - `authorized_keys` is copied at startup to `/etc/ssh/sftpuser_keys/authorized_keys` with strict container-side permissions.
 - New keys are generated only on true first run (no existing key files).
 - If persisted key state is unreadable, empty, or inconsistent, startup fails with a clear error instead of rotating keys.
-- Host keys are persisted in `HOST_KEY_DIR` (`/home/sftpuser/.host_keys` by default). Missing host key types are auto-generated on startup and synced back.
+- Host keys are persisted in `HOST_KEY_DIR` (`/etc/ssh/host_keys` by default). Missing host key types are auto-generated on startup.
 
 ---
 
 ## SSHD Configuration
 
-- The image ships a managed `sshd_config` at build time (see `sshd_config` in this repo).
-- Startup does not patch `sshd_config` with `sed`; it starts sshd with:
-  `sshd -D -e -f /etc/ssh/sshd_config -p "$SFTP_PORT"`
+- The image ships a managed `sshd` template at build time (see `sshd_config.template` in this repo).
+- Startup renders a concrete config from that template and starts sshd with:
+  `sshd -D -e -f /etc/ssh/sshd_config.runtime`
 - `AuthorizedKeysFile` is pinned to `/etc/ssh/sftpuser_keys/authorized_keys` to avoid host mount permission edge cases.
-- Runtime port changes are handled with the `-p` process argument, not by mutating config files.
+- Internal SFTP listen port is fixed at `2022`; change only the host publish port (`-p <host_port>:2022`).
+- SFTP sessions run in a chroot at `/home/sftpuser`.
 
 ---
 
@@ -186,7 +193,20 @@ docker inspect <container_name> --format '{{range .Mounts}}{{.Destination}} <- {
 ls -l /home/user/.ssh_keys/simple-sftp-host/ssh_host_*
 ```
 
-Keep `/home/sftpuser/.host_keys` mounted to a stable host directory and avoid overlapping it under an SFTP-exposed parent mount.
+Keep `/etc/ssh/host_keys` mounted to a stable host directory and avoid overlapping it under an SFTP-exposed parent mount.
+
+### Permission denied reading or writing key directories
+
+If logs include errors like:
+
+```text
+cp: can't open '/etc/ssh/host_keys/ssh_host_rsa_key': Permission denied
+```
+
+the mounted key directories are not readable/writable by the container.
+
+- Ensure `HOST_KEY_DIR` and `SSH_KEY_DIR` mounts are readable/writable during startup.
+- Ensure any mounted SFTP data directories are writable by your selected `PUID`/`PGID`.
 
 ---
 
@@ -196,22 +216,43 @@ You can customize behavior with these:
 
 | Variable | Default | What it does |
 |---|---|---|
-| `SFTP_PORT` | `22` | Port the SFTP server listens on inside the container |
 | `SFTP_PATHS` | `/data` | Comma-separated directories to create (accessible over SFTP) |
 | `SSH_KEY_DIR` | `/home/sftpuser/.ssh` | Where keys are stored inside the container |
-| `HOST_KEY_DIR` | `/home/sftpuser/.host_keys` | Where SSH host keys are persisted inside the container |
+| `HOST_KEY_DIR` | `/etc/ssh/host_keys` | Where SSH host keys are persisted inside the container |
+| `PUID` | `1000` | Runtime UID to apply to `sftpuser` before startup |
+| `PGID` | `1000` | Runtime GID to apply to `sftpuser` before startup |
 
 `SSH_KEY_DIR` and `HOST_KEY_DIR` should be absolute paths. For backward compatibility, relative values like `keys` are interpreted as `/keys`.
+
+### UID/GID Customization (Runtime)
+
+To match host filesystem ownership, pass `PUID` and `PGID` at container startup:
+
+```bash
+docker run -d --name simple-sftp-server \
+  -p 2222:2022 \
+  -e PUID="$(id -u)" \
+  -e PGID="$(id -g)" \
+  -e SSH_KEY_DIR=/keys \
+  -v /home/user/.ssh_keys/simple-sftp:/keys \
+  -v /home/user/.ssh_keys/simple-sftp-host:/etc/ssh/host_keys \
+  -v /home/user/sftp_data:/home/sftpuser/data \
+  pacnpal/simple-sftp-server
+```
+
+Do not set `user:`/`--user` at runtime when using `PUID`/`PGID`; the entrypoint remaps `sftpuser` before starting `sshd`.
 
 Example — serve multiple directories:
 
 ```bash
 docker run -d --name simple-sftp-server \
-  -p 2222:22 \
+  -p 2222:2022 \
+  -e PUID="$(id -u)" \
+  -e PGID="$(id -g)" \
   -e SSH_KEY_DIR=/keys \
   -e SFTP_PATHS=/data,/uploads,/backups \
   -v /home/user/.ssh_keys/simple-sftp:/keys \
-  -v /home/user/.ssh_keys/simple-sftp-host:/home/sftpuser/.host_keys \
+  -v /home/user/.ssh_keys/simple-sftp-host:/etc/ssh/host_keys \
   -v /home/user/sftp_data:/home/sftpuser/data \
   -v /home/user/sftp_uploads:/home/sftpuser/uploads \
   -v /home/user/sftp_backups:/home/sftpuser/backups \
@@ -238,7 +279,8 @@ Then use `simple-sftp-server` instead of `pacnpal/simple-sftp-server` in the com
 
 - **SFTP only** — no shell access, no SCP
 - **Key auth only** — password authentication is disabled
-- **Chrooted** — user is locked to their home directory, can't see anything else
+- **Chrooted SFTP sessions** — authenticated users are jailed to `/home/sftpuser`
+- **Runtime UID/GID remap** — set `PUID`/`PGID` to match host ownership for mounted SFTP data
 - All forwarding disabled (TCP, agent, X11, tunneling)
 - Generated client keys are host-persisted by design for convenience. Secure your host client-key directory.
 - Host keys are generated at first start, not baked into the image (each container gets unique keys)

@@ -2,10 +2,12 @@ services:
   sftp:
     image: pacnpal/simple-sftp-server:latest
     ports:
-      - "2222:22"
+      - "${SFTP_HOST_PORT:-2222}:2022"
     environment:
+      - PUID=${PUID:-1000}
+      - PGID=${PGID:-1000}
       - SSH_KEY_DIR=/keys
     volumes:
       - /home/user/.ssh_keys/simple-sftp:/keys
-      - /home/user/.ssh_keys/simple-sftp-host:/home/sftpuser/.host_keys
+      - /home/user/.ssh_keys/simple-sftp-host:/etc/ssh/host_keys
       - /home/user/sftp_data:/home/sftpuser/data

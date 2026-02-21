@@ -1,25 +1,27 @@
 FROM alpine:3.20
 
-RUN apk add --no-cache openssh-server && \
-    adduser -D -h /home/sftpuser -s /sbin/nologin sftpuser && \
-    # Keep password auth disabled in sshd, but ensure the account is not shadow-locked
+ARG SFTP_UID=1000
+ARG SFTP_GID=1000
+
+RUN apk add --no-cache openssh-server shadow && \
+    addgroup -g "${SFTP_GID}" -S sftpgroup && \
+    adduser -D -u "${SFTP_UID}" -G sftpgroup -h /home/sftpuser -s /bin/sh sftpuser && \
+    # Keep password auth disabled in sshd config, but ensure account is not shadow-locked
     # so public-key authentication is allowed.
     passwd -d sftpuser && \
-    mkdir -p /run/sshd /etc/ssh/sftpuser_keys && \
-    # Never bake host keys into images.
-    rm -f /etc/ssh/ssh_host_*
+    mkdir -p /home/sftpuser/.config /home/sftpuser/.ssh && \
+    chown -R sftpuser:sftpgroup /home/sftpuser
 
-COPY sshd_config /etc/ssh/sshd_config
+COPY sshd_config.template /etc/ssh/sshd_config.template
 
 COPY entrypoint.sh /entrypoint.sh
-RUN chmod 600 /etc/ssh/sshd_config && \
+RUN chmod 644 /etc/ssh/sshd_config.template && \
     chmod +x /entrypoint.sh
 
-ENV SFTP_PORT=22 \
-    SFTP_PATHS=/data \
+ENV SFTP_PATHS=/data \
     SSH_KEY_DIR=/home/sftpuser/.ssh \
-    HOST_KEY_DIR=/home/sftpuser/.host_keys
+    HOST_KEY_DIR=/etc/ssh/host_keys
 
-EXPOSE 22
+EXPOSE 2022
 
 ENTRYPOINT ["/entrypoint.sh"]
