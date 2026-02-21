@@ -201,6 +201,8 @@ You can customize behavior with these:
 | `SSH_KEY_DIR` | `/home/sftpuser/.ssh` | Where keys are stored inside the container |
 | `HOST_KEY_DIR` | `/home/sftpuser/.host_keys` | Where SSH host keys are persisted inside the container |
 
+`SSH_KEY_DIR` and `HOST_KEY_DIR` should be absolute paths. For backward compatibility, relative values like `keys` are interpreted as `/keys`.
+
 Example — serve multiple directories:
 
 ```bash

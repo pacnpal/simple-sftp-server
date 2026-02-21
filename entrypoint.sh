@@ -28,16 +28,23 @@ fail() {
   exit 1
 }
 
-validate_absolute_path() {
+resolve_container_path() {
   path="$1"
   var_name="$2"
 
+  [ -n "$path" ] || fail "${var_name} cannot be empty."
+
   case "$path" in
-    /*) ;;
+    /*)
+      resolved="$path"
+      ;;
     *)
-      fail "${var_name} must be an absolute path. Got: ${path}"
+      resolved="/$path"
+      echo "WARNING: ${var_name} should be absolute. Interpreting '${path}' as '${resolved}'." >&2
       ;;
   esac
+
+  normalize_dir "$resolved"
 }
 
 validate_port() {
@@ -268,8 +275,8 @@ start_sshd() {
 }
 
 main() {
-  validate_absolute_path "$PERSIST_SSH" "SSH_KEY_DIR"
-  validate_absolute_path "$HOST_KEY_PERSIST" "HOST_KEY_DIR"
+  PERSIST_SSH="$(resolve_container_path "$PERSIST_SSH" "SSH_KEY_DIR")"
+  HOST_KEY_PERSIST="$(resolve_container_path "$HOST_KEY_PERSIST" "HOST_KEY_DIR")"
   validate_port
   unlock_sftp_user_if_needed
   prepare_host_keys
