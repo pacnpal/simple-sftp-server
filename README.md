@@ -28,7 +28,7 @@ chmod 700 /home/user/.ssh_keys /home/user/.ssh_keys/simple-sftp /home/user/.ssh_
 ```
 
 ```bash
-docker run -d --name sftp \
+docker run -d --name simple-sftp-server \
   -p 2222:22 \
   -e SSH_KEY_DIR=/keys \
   -v /home/user/.ssh_keys/simple-sftp:/keys \
@@ -68,13 +68,13 @@ You're in. Type `ls` to look around, `put myfile.txt` to upload, `get myfile.txt
 
 ```bash
 # Stop the server
-docker stop sftp
+docker stop simple-sftp-server
 
 # Start it back up (your files and keys are still there)
-docker start sftp
+docker start simple-sftp-server
 
 # Remove it completely
-docker rm -f sftp
+docker rm -f simple-sftp-server
 ```
 
 Your files and keys are stored on the host filesystem, so they persist across `stop`, `start`, and even `docker rm` + recreate. They only go away if you explicitly delete the directories:
@@ -120,7 +120,7 @@ If you already have SSH keys and an `authorized_keys` file, you can skip the aut
 Put `authorized_keys` inside a host directory, then mount that directory as `SSH_KEY_DIR`.
 
 ```bash
-docker run -d --name sftp \
+docker run -d --name simple-sftp-server \
   -p 2222:22 \
   -e SSH_KEY_DIR=/keys \
   -v /path/to/your/keydir:/keys \
@@ -154,7 +154,7 @@ You can customize behavior with these:
 Example — serve multiple directories:
 
 ```bash
-docker run -d --name sftp \
+docker run -d --name simple-sftp-server \
   -p 2222:22 \
   -e SSH_KEY_DIR=/keys \
   -e SFTP_PATHS=/data,/uploads,/backups \
