@@ -38,8 +38,7 @@ jobs:
 
       - name: Build Docker Hub README
         run: |
-          printf '> **Source**: [github.com/${{ github.repository }}](https://github.com/${{ github.repository }})\n\n' > dockerhub-readme.md
-          cat README.md >> dockerhub-readme.md
+          sed 's|^A dead simple|[![GitHub](https://img.shields.io/badge/GitHub-Source-blue?logo=github)](https://github.com/${{ github.repository }})\n\nA dead simple|' README.md > dockerhub-readme.md
 
       - uses: peter-evans/dockerhub-description@v4
         with:
