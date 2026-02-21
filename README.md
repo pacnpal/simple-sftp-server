@@ -1,5 +1,9 @@
 # Simple SFTP Server
 
+[![GitHub](https://img.shields.io/badge/GitHub-Source-blue?logo=github)](https://github.com/pacnpal/simple-sftp-server)
+[![GHCR](https://img.shields.io/badge/GHCR-Package-blue?logo=github)](https://ghcr.io/pacnpal/simple-sftp-server)
+[![Docker Hub](https://img.shields.io/badge/Docker%20Hub-Image-blue?logo=docker)](https://hub.docker.com/r/pacnpal/simple-sftp-server)
+
 A dead simple SFTP server in Docker. Nothing else. No shell, no tunneling, no forwarding. Just SFTP.
 
 ---
