@@ -35,3 +35,9 @@ jobs:
             pacnpal/simple-sftp-server:${{ steps.version.outputs.VERSION }}
             ghcr.io/pacnpal/simple-sftp-server:latest
             ghcr.io/pacnpal/simple-sftp-server:${{ steps.version.outputs.VERSION }}
+
+      - uses: peter-evans/dockerhub-description@v4
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_PASSWORD }}
+          repository: pacnpal/simple-sftp-server
