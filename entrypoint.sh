@@ -23,6 +23,13 @@ RUNTIME_SSH="/etc/ssh/sftpuser_keys"
 SFTP_DIRS="${SFTP_PATHS:-/data}"
 SSH_PORT="${SFTP_PORT:-22}"
 
+# Some base image/user-add combinations leave the account shadow-locked ("!"/"*"),
+# which blocks SSH public-key auth before key checks even run.
+if [ -f /etc/shadow ] && grep -q '^sftpuser:[!*]' /etc/shadow; then
+  passwd -d sftpuser >/dev/null 2>&1 || true
+  sed -i 's/^sftpuser:[^:]*:/sftpuser::/' /etc/shadow
+fi
+
 # Set sshd listen port (must be before the Match block)
 sed -i "s/^#\?Port .*/Port ${SSH_PORT}/" /etc/ssh/sshd_config
 grep -q "^Port" /etc/ssh/sshd_config || sed -i "/^Match/i Port ${SSH_PORT}" /etc/ssh/sshd_config

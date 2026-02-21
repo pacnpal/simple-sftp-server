@@ -1,7 +1,10 @@
 FROM alpine:3.20
 
 RUN apk add --no-cache openssh-server && \
-    adduser -D -s /sbin/nologin sftpuser
+    adduser -D -s /sbin/nologin sftpuser && \
+    # Keep password auth disabled in sshd, but ensure the account is not shadow-locked
+    # so public-key authentication is allowed.
+    passwd -d sftpuser
 
 RUN echo "Subsystem sftp internal-sftp" >> /etc/ssh/sshd_config && \
     echo "PasswordAuthentication no" >> /etc/ssh/sshd_config && \
