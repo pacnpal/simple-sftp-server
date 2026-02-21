@@ -1,6 +1,11 @@
 #!/bin/sh
 set -e
 
+# Generate host keys on first start (not baked into the image)
+if [ ! -f /etc/ssh/ssh_host_ed25519_key ]; then
+  ssh-keygen -A
+fi
+
 SSH_DIR="${SSH_KEY_DIR:-/home/sftpuser/.ssh}"
 SFTP_DIRS="${SFTP_PATHS:-/data}"
 SSH_PORT="${SFTP_PORT:-22}"
