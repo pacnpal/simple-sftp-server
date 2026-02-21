@@ -1,10 +1,10 @@
 FROM alpine:3.20
 
 RUN apk add --no-cache openssh-server && \
-    adduser -D -s /bin/sh sftpuser && \
-    echo "sftpuser:sftpuser" | chpasswd
+    adduser -D -s /bin/sh sftpuser
 
 RUN echo "Subsystem sftp internal-sftp" >> /etc/ssh/sshd_config && \
+    echo "PasswordAuthentication no" >> /etc/ssh/sshd_config && \
     echo "AllowTcpForwarding no" >> /etc/ssh/sshd_config && \
     echo "X11Forwarding no" >> /etc/ssh/sshd_config && \
     echo "AllowAgentForwarding no" >> /etc/ssh/sshd_config && \

@@ -14,6 +14,10 @@ elif [ ! -f /etc/ssh/ssh_host_ed25519_key ]; then
   cp /etc/ssh/ssh_host_* "$HOST_KEY_PERSIST/"
 fi
 
+# Enforce correct permissions — bind-mount filesystems may not preserve them
+chmod 600 /etc/ssh/ssh_host_*_key 2>/dev/null || true
+chmod 600 "$HOST_KEY_PERSIST"/ssh_host_*_key 2>/dev/null || true
+
 PERSIST_SSH="${SSH_KEY_DIR:-/home/sftpuser/.ssh}"
 RUNTIME_SSH="/etc/ssh/sftpuser_keys"
 SFTP_DIRS="${SFTP_PATHS:-/data}"
@@ -87,6 +91,13 @@ for dir in $SFTP_DIRS; do
 done
 
 echo ""
+
+# Validate config before starting — catch errors early
+if ! /usr/sbin/sshd -t 2>&1; then
+  echo "ERROR: sshd configuration is invalid. Check the logs above."
+  exit 1
+fi
+
 echo "SFTP server starting on port ${SSH_PORT}..."
 echo ""
 

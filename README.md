@@ -155,6 +155,7 @@ Then use `simple-sftp-server` instead of `pacnpal/simple-sftp-server` in the com
 ## Security
 
 - **SFTP only** — no shell access, no SCP
+- **Key auth only** — password authentication is disabled
 - **Chrooted** — user is locked to their home directory, can't see anything else
 - All forwarding disabled (TCP, agent, X11, tunneling)
 - Host keys are generated at first start, not baked into the image (each container gets unique keys). They are automatically persisted inside the mounted volume
