@@ -1,7 +1,7 @@
 FROM alpine:3.20
 
 RUN apk add --no-cache openssh-server && \
-    adduser -D -s /bin/sh sftpuser
+    adduser -D -s /sbin/nologin sftpuser
 
 RUN echo "Subsystem sftp internal-sftp" >> /etc/ssh/sshd_config && \
     echo "PasswordAuthentication no" >> /etc/ssh/sshd_config && \
