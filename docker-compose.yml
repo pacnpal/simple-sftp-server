@@ -9,6 +9,4 @@ services:
       - SFTP_PATHS=/data,/uploads,/backups
       - SFTP_PORT=${SFTP_PORT:-22}
     volumes:
-      - /home/user/sftp_host_keys:/etc/ssh
-      - /home/user/sftp_ssh:/home/sftpuser/.ssh
-      - /home/user/sftp_data:/home/sftpuser/data
+      - /home/user/sftp:/home/sftpuser
