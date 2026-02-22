@@ -19,7 +19,7 @@ KbdInteractiveAuthentication no
 ChallengeResponseAuthentication no
 PermitEmptyPasswords no
 UseDNS no
-StrictModes yes
+StrictModes no
 
 AllowUsers __SFTP_USER__
 AuthorizedKeysFile __AUTHORIZED_KEYS_FILE__
@@ -36,5 +36,5 @@ PermitUserEnvironment no
 Subsystem sftp internal-sftp
 
 Match User __SFTP_USER__
-  ChrootDirectory %h
+  ChrootDirectory __SFTP_HOME__
   ForceCommand internal-sftp

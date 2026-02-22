@@ -3,17 +3,28 @@ set -eu
 
 SSHD_BIN="/usr/sbin/sshd"
 SSHD_TEMPLATE="/etc/ssh/sshd_config.template"
-RUNTIME_SSHD_CONFIG="/etc/ssh/sshd_config.runtime"
-
-SFTP_USER="sftpuser"
-SFTP_HOME="/home/${SFTP_USER}"
 SFTP_PORT="2022"
-RUNTIME_SSH="/etc/ssh/sftpuser_keys"
 
-HOST_KEY_PERSIST="${HOST_KEY_DIR:-/etc/ssh/host_keys}"
-PERSIST_SSH="${SSH_KEY_DIR:-${SFTP_HOME}/.ssh}"
+SFTP_USER="${SFTP_USER:-sftpuser}"
+SFTP_GROUP="${SFTP_GROUP:-sftpgroup}"
+SFTP_HOME="/home/sftpuser"
 SFTP_DIRS="${SFTP_PATHS:-/data}"
-SFTP_GROUP="sftpgroup"
+SFTP_CHROOT="${SFTP_CHROOT:-true}"
+
+PERSIST_SSH="${SSH_KEY_DIR:-/keys}"
+HOST_KEY_PERSIST="${HOST_KEY_DIR:-/host_keys}"
+
+RUNTIME_DIR="/tmp/simple-sftp-runtime"
+RUNTIME_SSHD_CONFIG="${RUNTIME_DIR}/sshd_config.runtime"
+RUNTIME_AUTH_KEYS="${RUNTIME_DIR}/authorized_keys"
+NSS_PASSWD_FILE="${RUNTIME_DIR}/passwd"
+NSS_GROUP_FILE="${RUNTIME_DIR}/group"
+
+CURRENT_UID=""
+CURRENT_GID=""
+REQUESTED_UID=""
+REQUESTED_GID=""
+CHROOT_ENABLED=""
 
 fail() {
   echo "ERROR: $*" >&2
@@ -67,57 +78,98 @@ validate_runtime_id() {
   fi
 }
 
-require_root() {
-  uid="$(id -u)"
-  if [ "$uid" -ne 0 ]; then
-    fail "Container must start as root to support runtime PUID/PGID remap and chroot setup."
-  fi
+parse_bool() {
+  value="$1"
+  var_name="$2"
+  normalized="$(printf '%s' "$value" | tr '[:upper:]' '[:lower:]')"
+
+  case "$normalized" in
+    1|true|yes|on)
+      printf 'true'
+      ;;
+    0|false|no|off)
+      printf 'false'
+      ;;
+    *)
+      fail "${var_name} must be one of: true, false, 1, 0, yes, no, on, off. Got: ${value}"
+      ;;
+  esac
 }
 
-configure_runtime_user_group() {
-  requested_uid="${PUID:-}"
-  requested_gid="${PGID:-}"
+validate_runtime_identity() {
+  CURRENT_UID="$(id -u)"
+  CURRENT_GID="$(id -g)"
 
-  current_uid="$(id -u "$SFTP_USER" 2>/dev/null || true)"
-  current_gid="$(id -g "$SFTP_USER" 2>/dev/null || true)"
-  [ -n "$current_uid" ] || fail "User ${SFTP_USER} is missing from /etc/passwd."
-  [ -n "$current_gid" ] || fail "User ${SFTP_USER} has no valid primary group."
+  REQUESTED_UID="${PUID:-$CURRENT_UID}"
+  REQUESTED_GID="${PGID:-$CURRENT_GID}"
 
-  [ -n "$requested_uid" ] || requested_uid="$current_uid"
-  [ -n "$requested_gid" ] || requested_gid="$current_gid"
+  validate_runtime_id "$REQUESTED_UID" "PUID"
+  validate_runtime_id "$REQUESTED_GID" "PGID"
 
-  validate_runtime_id "$requested_uid" "PUID"
-  validate_runtime_id "$requested_gid" "PGID"
-
-  existing_user="$(awk -F: -v uid="$requested_uid" '$3==uid {print $1; exit}' /etc/passwd)"
-  if [ -n "$existing_user" ] && [ "$existing_user" != "$SFTP_USER" ]; then
-    fail "Requested PUID ${requested_uid} is already used by user '${existing_user}'."
+  if [ "$CURRENT_UID" -eq 0 ]; then
+    fail "Container must run rootless. Set user to \"${REQUESTED_UID}:${REQUESTED_GID}\" (Compose user:/docker --user)."
   fi
 
-  target_group_name="$(awk -F: -v gid="$requested_gid" '$3==gid {print $1; exit}' /etc/group)"
-  if [ -z "$target_group_name" ]; then
-    groupmod -g "$requested_gid" sftpgroup >/dev/null 2>&1 || \
-      fail "Failed to set sftpgroup GID to ${requested_gid}."
-    target_group_name="sftpgroup"
-  fi
-
-  usermod -u "$requested_uid" -g "$target_group_name" "$SFTP_USER" >/dev/null 2>&1 || \
-    fail "Failed to remap ${SFTP_USER} to ${requested_uid}:${requested_gid}."
-
-  SFTP_GROUP="$(id -gn "$SFTP_USER" 2>/dev/null || true)"
-  [ -n "$SFTP_GROUP" ] || fail "Failed to resolve primary group for ${SFTP_USER}."
-
-  if [ "$requested_uid" != "$current_uid" ] || [ "$requested_gid" != "$current_gid" ]; then
-    echo "Applied runtime UID/GID remap: ${SFTP_USER} -> ${requested_uid}:${requested_gid}"
+  if [ "$CURRENT_UID" -ne "$REQUESTED_UID" ] || [ "$CURRENT_GID" -ne "$REQUESTED_GID" ]; then
+    fail "PUID/PGID (${REQUESTED_UID}:${REQUESTED_GID}) do not match runtime uid/gid (${CURRENT_UID}:${CURRENT_GID}). Start container with user \"${REQUESTED_UID}:${REQUESTED_GID}\"."
   fi
 }
 
 validate_security_paths() {
   case "$HOST_KEY_PERSIST" in
     "$SFTP_HOME"|"$SFTP_HOME"/*)
-      fail "HOST_KEY_DIR must be outside ${SFTP_HOME} to avoid exposing private host keys over SFTP."
+      fail "HOST_KEY_DIR must be outside ${SFTP_HOME} so SFTP sessions cannot reach private host keys."
       ;;
   esac
+}
+
+validate_chroot_layout() {
+  for dir in / /home "$SFTP_HOME"; do
+    [ -d "$dir" ] || fail "Required chroot path is missing: ${dir}"
+    owner_uid="$(ls -nd "$dir" | awk '{print $3}')"
+    [ "$owner_uid" = "0" ] || fail "Chroot path ${dir} must be owned by root (uid 0). Found uid ${owner_uid}."
+  done
+
+  if [ -w "$SFTP_HOME" ]; then
+    fail "Chroot path ${SFTP_HOME} must not be writable by the runtime user."
+  fi
+}
+
+prepare_runtime_dir() {
+  mkdir -p "$RUNTIME_DIR" || fail "Cannot create runtime directory ${RUNTIME_DIR}."
+  chmod 700 "$RUNTIME_DIR" 2>/dev/null || true
+}
+
+setup_nss_wrapper() {
+  nss_lib=""
+  for candidate in /usr/lib/libnss_wrapper.so /lib/libnss_wrapper.so; do
+    if [ -f "$candidate" ]; then
+      nss_lib="$candidate"
+      break
+    fi
+  done
+
+  [ -n "$nss_lib" ] || fail "libnss_wrapper.so not found. Install nss_wrapper in the image."
+
+  awk -F: -v user="$SFTP_USER" '$1 != user { print }' /etc/passwd > "$NSS_PASSWD_FILE" || \
+    fail "Failed to prepare NSS passwd file."
+  printf '%s:x:%s:%s::%s:/bin/sh\n' "$SFTP_USER" "$CURRENT_UID" "$CURRENT_GID" "$SFTP_HOME" >> "$NSS_PASSWD_FILE"
+
+  awk -F: -v grp="$SFTP_GROUP" '$1 != grp { print }' /etc/group > "$NSS_GROUP_FILE" || \
+    fail "Failed to prepare NSS group file."
+  printf '%s:x:%s:%s\n' "$SFTP_GROUP" "$CURRENT_GID" "$SFTP_USER" >> "$NSS_GROUP_FILE"
+
+  chmod 600 "$NSS_PASSWD_FILE" "$NSS_GROUP_FILE" 2>/dev/null || true
+
+  export NSS_WRAPPER_PASSWD="$NSS_PASSWD_FILE"
+  export NSS_WRAPPER_GROUP="$NSS_GROUP_FILE"
+
+  if [ -n "${LD_PRELOAD:-}" ]; then
+    LD_PRELOAD="${nss_lib}:${LD_PRELOAD}"
+  else
+    LD_PRELOAD="$nss_lib"
+  fi
+  export LD_PRELOAD
 }
 
 ensure_host_keypair() {
@@ -129,10 +181,17 @@ ensure_host_keypair() {
   if [ -f "$key_file" ]; then
     [ -r "$key_file" ] || fail "Cannot read persisted host key ${key_file}."
     if [ ! -f "$pub_file" ]; then
-      ssh-keygen -y -f "$key_file" > "$pub_file" 2>/dev/null || \
-        fail "Failed to derive host public key from ${key_file}."
+      if [ -w "$HOST_KEY_PERSIST" ]; then
+        ssh-keygen -y -f "$key_file" > "$pub_file" 2>/dev/null || \
+          fail "Failed to derive host public key from ${key_file}."
+      else
+        echo "WARNING: Missing ${pub_file}, but HOST_KEY_DIR is read-only. Continuing with private key only."
+      fi
     fi
   else
+    [ -w "$HOST_KEY_PERSIST" ] || \
+      fail "Missing host key ${key_file}, and HOST_KEY_DIR is not writable."
+
     if [ -f "$pub_file" ]; then
       echo "WARNING: Found ${pub_file} without private key. Regenerating ${key_type} host keypair."
     fi
@@ -157,9 +216,12 @@ ensure_host_keypair() {
     generated=true
   fi
 
-  chown root:root "$key_file" "$pub_file" 2>/dev/null || true
-  chmod 600 "$key_file" || fail "Failed to set permissions on ${key_file}."
-  chmod 644 "$pub_file" || fail "Failed to set permissions on ${pub_file}."
+  if [ -w "$HOST_KEY_PERSIST" ]; then
+    chmod 600 "$key_file" 2>/dev/null || true
+    if [ -f "$pub_file" ]; then
+      chmod 644 "$pub_file" 2>/dev/null || true
+    fi
+  fi
 
   if [ "$generated" = true ]; then
     GENERATED_HOST_KEYS=$((GENERATED_HOST_KEYS + 1))
@@ -167,10 +229,39 @@ ensure_host_keypair() {
 }
 
 prepare_host_keys() {
+  requested_host_key_dir="$HOST_KEY_PERSIST"
+
+  mkdir -p "$requested_host_key_dir" || \
+    fail "Cannot create HOST_KEY_DIR at ${requested_host_key_dir}. Check mount permissions."
+
+  # Backward-compatible upgrade path:
+  # if legacy root-owned host keys are unreadable/unwritable in rootless mode,
+  # fall back to runtime-only host keys so startup still succeeds.
+  if [ ! -w "$requested_host_key_dir" ]; then
+    all_private_keys_readable=true
+    for key_type in rsa ecdsa ed25519; do
+      key_file="${requested_host_key_dir}/ssh_host_${key_type}_key"
+      if [ ! -r "$key_file" ]; then
+        all_private_keys_readable=false
+        break
+      fi
+    done
+
+    if [ "$all_private_keys_readable" = false ]; then
+      fallback_host_key_dir="${RUNTIME_DIR}/host_keys"
+      echo "WARNING: HOST_KEY_DIR ${requested_host_key_dir} is not writable/readable enough for managed host keys."
+      echo "WARNING: Falling back to runtime host keys at ${fallback_host_key_dir} (non-persistent)."
+      echo "WARNING: To restore persistent host keys, chown the host-key volume to uid:gid ${CURRENT_UID}:${CURRENT_GID}."
+      HOST_KEY_PERSIST="$fallback_host_key_dir"
+      mkdir -p "$HOST_KEY_PERSIST" || \
+        fail "Cannot create runtime host key directory at ${HOST_KEY_PERSIST}."
+    fi
+  fi
+
   mkdir -p "$HOST_KEY_PERSIST" || \
     fail "Cannot create HOST_KEY_DIR at ${HOST_KEY_PERSIST}. Check mount permissions."
-  chown root:root "$HOST_KEY_PERSIST" 2>/dev/null || true
-  chmod 700 "$HOST_KEY_PERSIST" || fail "Failed to set permissions on ${HOST_KEY_PERSIST}."
+
+  chmod 700 "$HOST_KEY_PERSIST" 2>/dev/null || true
 
   GENERATED_HOST_KEYS=0
   ensure_host_keypair rsa
@@ -203,6 +294,8 @@ prepare_auth_keys() {
     if [ -e "$KEY_FILE" ] || [ -e "$PUB_KEY_FILE" ]; then
       fail "Incomplete key state in ${PERSIST_SSH}. Found key material without ${AUTH_KEYS}."
     fi
+    [ -w "$PERSIST_SSH" ] || \
+      fail "SSH_KEY_DIR is read-only and ${AUTH_KEYS} is missing. Mount writable or pre-provision authorized_keys."
   fi
 
   if [ "$has_keys" = false ]; then
@@ -224,7 +317,7 @@ prepare_auth_keys() {
     echo "  ${PERSIST_SSH}/sftpuser_key"
     echo ""
     echo "Connect with:"
-    echo "  sftp -i sftp_key -P <mapped_port> sftpuser@<host>"
+    echo "  sftp -i sftp_key -P <mapped_port> ${SFTP_USER}@<host>"
     echo ""
     echo "=============================================="
   else
@@ -236,28 +329,13 @@ prepare_auth_keys() {
     echo "=============================================="
   fi
 
-  chown "$SFTP_USER":"$SFTP_GROUP" "$PERSIST_SSH" 2>/dev/null || true
   chmod 700 "$PERSIST_SSH" 2>/dev/null || true
-  chown "$SFTP_USER":"$SFTP_GROUP" \
-    "$AUTH_KEYS" \
-    "$KEY_FILE" \
-    "$PUB_KEY_FILE" 2>/dev/null || true
   chmod 600 "$AUTH_KEYS" 2>/dev/null || true
   chmod 600 "$KEY_FILE" 2>/dev/null || true
   chmod 644 "$PUB_KEY_FILE" 2>/dev/null || true
 
-  mkdir -p "$RUNTIME_SSH" || fail "Cannot create runtime key directory at ${RUNTIME_SSH}."
-  cp "$AUTH_KEYS" "$RUNTIME_SSH/authorized_keys" || \
-    fail "Cannot copy authorized_keys into runtime directory."
-  chown root:root "$RUNTIME_SSH" 2>/dev/null || true
-  chmod 755 "$RUNTIME_SSH"
-  chown "$SFTP_USER":"$SFTP_GROUP" "$RUNTIME_SSH/authorized_keys" 2>/dev/null || true
-  chmod 600 "$RUNTIME_SSH/authorized_keys"
-}
-
-prepare_chroot_home() {
-  chown root:root "$SFTP_HOME" || fail "Failed to set ${SFTP_HOME} owner to root."
-  chmod 755 "$SFTP_HOME" || fail "Failed to set ${SFTP_HOME} permissions."
+  cp "$AUTH_KEYS" "$RUNTIME_AUTH_KEYS" || fail "Cannot copy authorized_keys into runtime directory."
+  chmod 600 "$RUNTIME_AUTH_KEYS" || fail "Failed to set permissions on runtime authorized_keys."
 }
 
 prepare_sftp_paths() {
@@ -288,15 +366,19 @@ prepare_sftp_paths() {
     fi
 
     case "$dir" in
-      /.ssh|/.ssh/*|/.host_keys|/.host_keys/*)
+      /.ssh|/.ssh/*|/.config|/.config/*|/.host_keys|/.host_keys/*|/host_keys|/host_keys/*|/keys|/keys/*)
         fail "Refusing to expose key-management path '${dir}' over SFTP."
         ;;
     esac
 
     path="${SFTP_HOME}${dir}"
-    mkdir -p "$path" || fail "Cannot create SFTP path ${path}."
-    chown "$SFTP_USER":"$SFTP_GROUP" "$path" 2>/dev/null || true
-    chmod 755 "$path" 2>/dev/null || true
+    [ -d "$path" ] || fail "SFTP path ${path} does not exist. Create or mount it before startup."
+    [ -r "$path" ] || fail "SFTP path ${path} is not readable."
+    [ -x "$path" ] || fail "SFTP path ${path} is not traversable."
+    if [ ! -w "$path" ]; then
+      echo "WARNING: SFTP path ${path} is not writable by uid ${CURRENT_UID}."
+    fi
+
     echo "Serving SFTP path: ${dir}"
     served_count=$((served_count + 1))
   done
@@ -313,10 +395,11 @@ render_sshd_config() {
   [ -f "$SSHD_TEMPLATE" ] || fail "Missing sshd config template at ${SSHD_TEMPLATE}."
 
   host_key_dir_escaped="$(escape_sed "$HOST_KEY_PERSIST")"
-  auth_keys_file_escaped="$(escape_sed "${RUNTIME_SSH}/authorized_keys")"
+  auth_keys_file_escaped="$(escape_sed "$RUNTIME_AUTH_KEYS")"
   port_escaped="$(escape_sed "$SFTP_PORT")"
   sftp_user_escaped="$(escape_sed "$SFTP_USER")"
-  pid_file_escaped="$(escape_sed "/run/sshd.pid")"
+  pid_file_escaped="$(escape_sed "${RUNTIME_DIR}/sshd.pid")"
+  sftp_home_escaped="$(escape_sed "$SFTP_HOME")"
 
   sed \
     -e "s|__PORT__|${port_escaped}|g" \
@@ -324,7 +407,13 @@ render_sshd_config() {
     -e "s|__AUTHORIZED_KEYS_FILE__|${auth_keys_file_escaped}|g" \
     -e "s|__SFTP_USER__|${sftp_user_escaped}|g" \
     -e "s|__PID_FILE__|${pid_file_escaped}|g" \
+    -e "s|__SFTP_HOME__|${sftp_home_escaped}|g" \
     "$SSHD_TEMPLATE" > "$RUNTIME_SSHD_CONFIG" || fail "Failed to render sshd config."
+
+  if [ "$CHROOT_ENABLED" != "true" ]; then
+    sed -i '/^[[:space:]]*ChrootDirectory[[:space:]]/d' "$RUNTIME_SSHD_CONFIG" || \
+      fail "Failed to disable ChrootDirectory in sshd config."
+  fi
 
   chmod 600 "$RUNTIME_SSHD_CONFIG"
 }
@@ -341,15 +430,23 @@ start_sshd() {
 }
 
 main() {
+  CHROOT_ENABLED="$(parse_bool "$SFTP_CHROOT" "SFTP_CHROOT")"
   PERSIST_SSH="$(resolve_container_path "$PERSIST_SSH" "SSH_KEY_DIR")"
   HOST_KEY_PERSIST="$(resolve_container_path "$HOST_KEY_PERSIST" "HOST_KEY_DIR")"
 
-  require_root
-  configure_runtime_user_group
+  validate_runtime_identity
   validate_security_paths
+  if [ "$CHROOT_ENABLED" = "true" ]; then
+    echo "Chroot mode: enabled (recommended)."
+    validate_chroot_layout
+  else
+    echo "WARNING: Chroot mode is disabled."
+    echo "WARNING: Authenticated SFTP users can browse any readable path in the container and mounted volumes."
+  fi
+  prepare_runtime_dir
+  setup_nss_wrapper
   prepare_host_keys
   prepare_auth_keys
-  prepare_chroot_home
   prepare_sftp_paths
   render_sshd_config
   start_sshd

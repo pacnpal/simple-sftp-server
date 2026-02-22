@@ -1,13 +1,18 @@
 services:
   sftp:
     image: pacnpal/simple-sftp-server:latest
+    user: "${PUID:-1000}:${PGID:-1000}"
+    cap_add:
+      - SYS_CHROOT
     ports:
       - "${SFTP_HOST_PORT:-2222}:2022"
     environment:
       - PUID=${PUID:-1000}
       - PGID=${PGID:-1000}
       - SSH_KEY_DIR=/keys
+      - HOST_KEY_DIR=/host_keys
+      - SFTP_CHROOT=${SFTP_CHROOT:-true}
     volumes:
       - /home/user/.ssh_keys/simple-sftp:/keys
-      - /home/user/.ssh_keys/simple-sftp-host:/etc/ssh/host_keys
+      - /home/user/.ssh_keys/simple-sftp-host:/host_keys
       - /home/user/sftp_data:/home/sftpuser/data
