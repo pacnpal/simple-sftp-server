@@ -135,6 +135,17 @@ validate_chroot_layout() {
   fi
 }
 
+validate_chroot_capability() {
+  if ! command -v chroot >/dev/null 2>&1; then
+    fail "chroot command is missing from the image. Cannot enforce SFTP_CHROOT=true."
+  fi
+
+  # Fast-fail if the runtime does not grant CAP_SYS_CHROOT.
+  if ! chroot / /bin/sh -c 'exit 0' >/dev/null 2>&1; then
+    fail "SFTP_CHROOT=true but CAP_SYS_CHROOT is unavailable. Add --cap-add SYS_CHROOT (Compose: cap_add: [SYS_CHROOT]) or set SFTP_CHROOT=false."
+  fi
+}
+
 prepare_runtime_dir() {
   mkdir -p "$RUNTIME_DIR" || fail "Cannot create runtime directory ${RUNTIME_DIR}."
   chmod 700 "$RUNTIME_DIR" 2>/dev/null || true
@@ -439,6 +450,7 @@ main() {
   if [ "$CHROOT_ENABLED" = "true" ]; then
     echo "Chroot mode: enabled (recommended)."
     validate_chroot_layout
+    validate_chroot_capability
   else
     echo "WARNING: Chroot mode is disabled."
     echo "WARNING: Authenticated SFTP users can browse any readable path in the container and mounted volumes."

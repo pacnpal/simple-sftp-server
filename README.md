@@ -209,6 +209,22 @@ ssh-keygen -y -f sftp_key | ssh-keygen -lf -
 
 The `authorizedkeysfile` path should be `/tmp/simple-sftp-runtime/authorized_keys`, and the two fingerprints should match.
 
+### `server lacks privileges to chroot to ChrootDirectory`
+
+This means `SFTP_CHROOT=true` but the container does not have `CAP_SYS_CHROOT`.
+
+Fix:
+
+- `docker run`: add `--cap-add SYS_CHROOT`
+- Compose: add
+
+```yaml
+cap_add:
+  - SYS_CHROOT
+```
+
+If your runtime policy does not allow this capability, set `SFTP_CHROOT=false` and accept the no-chroot risk model.
+
 ### Host key keeps changing
 
 If clients warn about host key changes, your host-key mount is not persisting stable key files.
